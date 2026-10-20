@@ -1,0 +1,66 @@
+# Fork-only check of workflows/resonate (ostrium-labs/mastra). Not part of the upstream PR.
+# Runs Mastra's lint and format checks and the package's tests on a GitHub-hosted runner;
+# uses no secrets. Mastra's own workflows are disabled on this fork.
+name: Resonate package check (fork)
+
+on:
+  push:
+    branches: [ci/resonate-check]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+
+      - name: Install @mastra/resonate and its workspace dependencies
+        run: pnpm install --frozen-lockfile --filter "@mastra/resonate..."
+
+      - name: Lockfile change for the new package
+        run: git diff --stat pnpm-lock.yaml
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pnpm-lock
+          path: pnpm-lock.yaml
+
+      - name: Build the dependencies
+        run: pnpm turbo build --filter "@mastra/resonate^..."
+
+      - name: Build
+        run: pnpm --filter @mastra/resonate build
+
+      - name: Lint (oxlint)
+        run: pnpm --filter @mastra/resonate lint
+
+      - name: Format (oxfmt)
+        run: pnpm exec oxfmt --check workflows/resonate docs/src/content/en/integrations/deploy/resonate.mdx .changeset/resonate-execution-engine.md
+
+      - name: Typecheck
+        run: pnpm exec tsc -p workflows/resonate/tsconfig.json --noEmit
+
+      - name: Start the Resonate server
+        run: |
+          docker compose -f workflows/resonate/docker-compose.yaml up -d
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8001/ -H 'content-type: application/json' -d '{}' || true)
+            [ "$code" != 000 ] && break
+            sleep 1
+          done
+
+      - name: Test
+        run: pnpm --filter @mastra/resonate test
+
+      - name: Resonate logs
+        if: failure()
+        run: docker compose -f workflows/resonate/docker-compose.yaml logs || true
