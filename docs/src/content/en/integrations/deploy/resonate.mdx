@@ -1,0 +1,163 @@
+---
+title: 'Resonate | Deploy'
+description: 'Run Mastra workflows durably on a Resonate server: memoized steps, durable sleeps, suspend and resume through durable promises, and crash recovery across workers.'
+---
+
+# Resonate
+
+[Resonate](https://resonatehq.io) is an open-source durable execution engine built on durable promises. The `@mastra/resonate` package runs workflows authored with the standard Mastra API on a Resonate server.
+
+## How Resonate works with Mastra
+
+`@mastra/resonate` provides an execution engine that extends Mastra's default engine:
+
+- Each workflow is registered as a Resonate function named by its `id`.
+- A run is a root durable promise named by the run id. Each step's result is stored in a durable promise, so a run that is replayed after a crash skips the steps that already completed.
+- `.sleep()` and `.sleepUntil()` are server-side timers. The worker is released while a run sleeps.
+- `suspend()` ends the run's current execution. The run then waits on a durable promise that `run.resume()` settles.
+- Retries follow the workflow's `retryConfig`. Resonate itself never retries a step.
+
+Workflow snapshots, run listings, and Studio keep using the storage you configure on `Mastra`.
+
+## Setup
+
+Install the required packages:
+
+```bash npm2yarn
+npm install @mastra/resonate@latest @resonatehq/sdk
+```
+
+You also need a Resonate server. For local development, run the [Resonate server](https://github.com/resonatehq/resonate) on its default port, `8001`:
+
+```bash
+docker run --rm -p 127.0.0.1:8001:8001 ghcr.io/resonatehq/resonate:v0.9.8 serve
+```
+
+## Building a Resonate-backed workflow
+
+### Resonate initialization
+
+Create a Resonate client and bind the workflow helpers to it. The client's `group` names the workers that can run your workflows.
+
+```ts title="src/mastra/resonate/index.ts"
+import { init } from '@mastra/resonate'
+import { Resonate } from '@resonatehq/sdk/async'
+
+export const resonate = new Resonate({
+  url: 'http://localhost:8001',
+  group: 'mastra',
+})
+
+export const { createWorkflow, createStep } = init(resonate)
+```
+
+### Creating steps
+
+```ts title="src/mastra/workflows/index.ts"
+import { z } from 'zod'
+import { createStep, createWorkflow } from '../resonate'
+
+const incrementStep = createStep({
+  id: 'increment',
+  inputSchema: z.object({ value: z.number() }),
+  outputSchema: z.object({ value: z.number() }),
+  execute: async ({ inputData }) => {
+    return { value: inputData.value + 1 }
+  },
+})
+
+const approvalStep = createStep({
+  id: 'approval',
+  inputSchema: z.object({ value: z.number() }),
+  outputSchema: z.object({ value: z.number() }),
+  resumeSchema: z.object({ approved: z.boolean() }),
+  execute: async ({ inputData, resumeData, suspend }) => {
+    if (!resumeData) {
+      return suspend({ reason: 'Waiting for approval' })
+    }
+    return { value: resumeData.approved ? inputData.value : 0 }
+  },
+})
+```
+
+### Creating the workflow
+
+```ts title="src/mastra/workflows/index.ts"
+export const incrementWorkflow = createWorkflow({
+  id: 'increment-workflow',
+  inputSchema: z.object({ value: z.number() }),
+  outputSchema: z.object({ value: z.number() }),
+  retryConfig: { attempts: 3, delay: 1000 },
+})
+  .then(incrementStep)
+  .sleep(60_000)
+  .then(approvalStep)
+  .commit()
+```
+
+### Configuring the Mastra instance
+
+Registering the workflow with Mastra also registers it with Resonate, so this process can run it.
+
+```ts title="src/mastra/index.ts"
+import { Mastra } from '@mastra/core'
+import { LibSQLStore } from '@mastra/libsql'
+import { incrementWorkflow } from './workflows'
+
+export const mastra = new Mastra({
+  workflows: { incrementWorkflow },
+  storage: new LibSQLStore({ id: 'mastra-storage', url: 'file:./mastra.db' }),
+})
+```
+
+## Running workflows
+
+Start a run and resume it after it suspends:
+
+```ts title="scripts/run.ts"
+import { mastra } from '../src/mastra'
+
+const run = await mastra.getWorkflow('incrementWorkflow').createRun()
+
+const first = await run.start({ inputData: { value: 5 } })
+console.log(first.status) // 'suspended'
+
+const result = await run.resume({ step: 'approval', resumeData: { approved: true } })
+console.log(result.status) // 'success'
+```
+
+`run.stream()` and `run.watch()` deliver the same events as the default engine, through the Mastra instance's PubSub. To watch runs that execute on another process, configure a shared PubSub on `Mastra`.
+
+### Workers and recovery
+
+Every process that registers the same workflows with a Resonate client in the same group is a worker. If the process running a workflow stops, the server hands its work to another worker when its lease expires, and the run continues after the last completed step. Workers hold a connection to the server, so no HTTP route is needed.
+
+:::warning
+Workers are long-lived processes. Don't run them on serverless platforms with short execution limits.
+:::
+
+## Configuration options
+
+### `timeout`
+
+Optional. The deadline of a run's durable promises, in milliseconds. Every sleep, sleep-until, and suspension must end before it. Defaults to 30 days.
+
+```ts
+export const { createWorkflow, createStep } = init(resonate, { timeout: 90 * 24 * 60 * 60 * 1000 })
+```
+
+### `group`
+
+Optional. The worker group that runs workflow executions. It must match the client's `group`, and is read from the client when omitted.
+
+## Constraints and notes
+
+- Step inputs and outputs must be JSON-serializable. Functions, symbols, bigints, and cyclic values are rejected.
+- A replay must request durable operations in the same order. Don't change a workflow's graph while runs of it are in flight.
+- Time travel and `restart()` aren't supported yet.
+
+## Related
+
+- [Workflows overview](/docs/workflows/overview)
+- [Suspend and resume](/docs/workflows/suspend-and-resume)
+- [Resonate documentation](https://docs.resonatehq.io)

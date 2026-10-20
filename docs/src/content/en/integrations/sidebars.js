@@ -588,6 +588,12 @@ const sidebars = {
         },
         {
           type: 'doc',
+          id: 'deploy/resonate',
+          label: 'Resonate',
+          customProps: { icon: 'https://github.com/resonatehq.png' },
+        },
+        {
+          type: 'doc',
           id: 'deploy/render',
           label: 'Render',
           customProps: {

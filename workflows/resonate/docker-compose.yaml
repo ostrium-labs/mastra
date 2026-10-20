@@ -1,0 +1,10 @@
+# The upstream Resonate server the engine's tests run against (and what Mastra's
+# CI would use): resonatehq/resonate v0.9.8, pinned by digest. Loopback only.
+name: mastra-resonate-tests
+
+services:
+  resonate:
+    image: ghcr.io/resonatehq/resonate:v0.9.8@sha256:cc226dbe25d6ad64db637d5a5e5f407fedd4cf011f4e77f4d8883ba5415289c4
+    command: serve --server-port 8001 --server-url http://127.0.0.1:8001
+    ports:
+      - '127.0.0.1:8001:8001'
