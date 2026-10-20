@@ -1,0 +1,117 @@
+---
+title: "Loams | Database"
+description: "Connect Mastra to Loams with PostgresStore and PgVector on Loams Postgres, or QdrantVector on the Loams Qdrant gateway. No separate Mastra package."
+packages:
+  - "@mastra/core"
+  - "@mastra/pg"
+  - "@mastra/qdrant"
+---
+
+# Loams
+
+[Loams](https://github.com/ostrium-labs/loams) is an open-source (Apache-2.0), self-hosted data platform that keeps its data in your own object-storage bucket. It serves Postgres (Loams Postgres, with `pgvector`) and a Qdrant-compatible vector API, so Mastra connects to it through [`PostgresStore`](/integrations/databases/postgresql), [`PgVector`](/reference/vectors/pg) and [`QdrantVector`](/reference/vectors/qdrant). Loams doesn't require a separate Mastra package.
+
+Loams is self-hosted. Run it on your machine, or on a server you reach over a private network such as a Tailscale or Headscale tailnet. Don't expose it to the public internet.
+
+## Quickstart
+
+Start Loams Postgres locally from the Loams release's `loams-compose-<version>.tar.gz`:
+
+```bash
+cd loams-compose-0.1.0/loams-postgres-dev
+docker compose up -d
+```
+
+It listens on `127.0.0.1:55433`. Set `DATABASE_URL`:
+
+```bash
+export DATABASE_URL=postgresql://cloud_admin:cloud_admin@127.0.0.1:55433/postgres
+```
+
+Install the PostgreSQL storage package:
+
+```bash npm2yarn
+npm install @mastra/pg@latest
+```
+
+Pass the connection string to `PostgresStore` and `PgVector`:
+
+```typescript title="src/mastra/index.ts"
+import { Mastra } from '@mastra/core/mastra'
+import { PgVector, PostgresStore } from '@mastra/pg'
+
+export const mastra = new Mastra({
+  storage: new PostgresStore({
+    id: 'loams-storage',
+    connectionString: process.env.DATABASE_URL!,
+  }),
+  vectors: {
+    loams: new PgVector({ id: 'loams-vector', connectionString: process.env.DATABASE_URL! }),
+  },
+})
+```
+
+On startup, Mastra calls `storage.init()` and creates its tables and indexes in Loams Postgres. Loams Postgres ships `pgvector` 0.8 on PostgreSQL 17.
+
+## Vector search with the Qdrant gateway
+
+Loams also serves the Qdrant REST API (`loams dev` listens on `127.0.0.1:6333`). Point [`QdrantVector`](/reference/vectors/qdrant) at it. Pass a Loams API key (`lk_…`) as `apiKey` and the Loams namespace in the `Loams-Namespace` header:
+
+```bash npm2yarn
+npm install @mastra/qdrant@latest
+```
+
+```typescript
+import { QdrantVector } from '@mastra/qdrant'
+
+const vector = new QdrantVector({
+  id: 'loams-qdrant',
+  url: process.env.LOAMS_QDRANT_URL ?? 'http://127.0.0.1:6333',
+  apiKey: process.env.LOAMS_API_KEY,
+  headers: { 'Loams-Namespace': process.env.LOAMS_NAMESPACE ?? 'default' },
+})
+```
+
+Use it with [semantic recall](/docs/memory/semantic-recall) by passing it as `vector` to `Memory`, with storage on `PostgresStore`.
+
+## Running Loams
+
+- **Locally:** `loams dev` (the Qdrant gateway on `127.0.0.1:6333`) and the Loams Postgres development stack (`127.0.0.1:55433`). With authentication off, `loams dev` only listens on loopback.
+- **On a server:** the self-hosted Loams compose release, reached over your tailnet by its tailnet name. Turn on API keys (`LOAMS_AUTH_MODE=apikey`) and give each Mastra deployment its own key and namespace.
+
+## Production connections
+
+- **Postgres:** use the role and password from your Loams Postgres connection string as `DATABASE_URL`. Loams API keys aren't Postgres credentials.
+- **Qdrant gateway:** an `lk_` API key in `apiKey` (sent as the `api-key` header), and a namespace in `Loams-Namespace`. A key scoped to an environment only reaches its namespace.
+- Keep keys in server-side environment variables; Loams refuses keys in query strings.
+
+## Initialization
+
+`PostgresStore` creates its schema on startup. If the runtime role shouldn't run DDL, call `storage.init()` once during deployment with an administrative connection, then set `disableInit: true` at runtime:
+
+```typescript title="src/mastra/index.ts"
+import { Mastra } from '@mastra/core/mastra'
+import { PostgresStore } from '@mastra/pg'
+
+export const mastra = new Mastra({
+  storage: new PostgresStore({
+    id: 'loams-storage',
+    connectionString: process.env.DATABASE_URL!,
+    disableInit: true,
+  }),
+})
+```
+
+`PgVector` accepts `disableInit: true` the same way once the `vector` extension and indexes exist.
+
+## Compatibility
+
+Mastra's own `@mastra/pg` and `@mastra/qdrant` test suites run against Loams on every change in [ostrium-labs/loams-mastra](https://github.com/ostrium-labs/loams-mastra). The [compatibility matrix](https://github.com/ostrium-labs/loams-mastra/blob/main/COMPATIBILITY.md) lists the results per Mastra and Loams version. On the Qdrant gateway, deleting a payload index and the geo, `nested` and `has_vector` filters aren't supported yet; Memory and RAG don't use them.
+
+## Related
+
+- [PostgreSQL storage](/integrations/databases/postgresql)
+- [`PgVector` reference](/reference/vectors/pg)
+- [`QdrantVector` reference](/reference/vectors/qdrant)
+- [Semantic recall](/docs/memory/semantic-recall)
+- [Loams × Mastra examples](https://github.com/ostrium-labs/loams-mastra/tree/main/examples)
