@@ -436,6 +436,12 @@ const sidebars = {
         },
         { type: 'doc', id: 'databases/libsql', label: 'libSQL', customProps: { icon: '/img/integrations/libsql.svg' } },
         {
+          type: 'doc',
+          id: 'databases/loams',
+          label: 'Loams',
+          customProps: { icon: 'https://loams.dev/icon.svg' },
+        },
+        {
           type: 'link',
           label: 'Mastra',
           href: '/docs/mastra-platform/database',
